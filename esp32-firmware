@@ -1,1 +1,76 @@
+#include <WiFi.h>
+#include <WebServer.h>
 
+const char* ssid = "PHONE HOTSPOT NAME";
+const char* password = "PASSWORD";
+
+WebServer server(80);
+
+void handleRoot() {
+
+  server.send(
+    200,
+    "text/plain",
+    "BlindNav ESP32 Online"
+  );
+}
+
+void handleNavigation() {
+
+  String data = server.arg("plain");
+
+  Serial.println();
+  Serial.println("======================");
+  Serial.println("DATA FROM ANDROID");
+  Serial.println(data);
+  Serial.println("======================");
+
+  server.send(
+    200,
+    "application/json",
+    "{\"status\":\"received\"}"
+  );
+}
+
+void setup() {
+
+  Serial.begin(115200);
+
+  WiFi.begin(ssid, password);
+
+  Serial.println();
+  Serial.println("Connecting to phone hotspot...");
+
+  while (WiFi.status() != WL_CONNECTED) {
+
+    delay(500);
+    Serial.print(".");
+  }
+
+  Serial.println();
+  Serial.println("CONNECTED TO HOTSPOT");
+
+  Serial.print("ESP32 IP ADDRESS: ");
+  Serial.println(WiFi.localIP());
+
+  server.on(
+    "/",
+    HTTP_GET,
+    handleRoot
+  );
+
+  server.on(
+    "/navigation",
+    HTTP_POST,
+    handleNavigation
+  );
+
+  server.begin();
+
+  Serial.println("ESP32 server started");
+}
+
+void loop() {
+
+  server.handleClient();
+}
