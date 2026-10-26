@@ -1,1 +1,2620 @@
+package com.example.sihblindnav
 
+import android.Manifest
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Bundle
+import android.speech.RecognitionListener
+import android.speech.RecognizerIntent
+import android.speech.SpeechRecognizer
+import android.speech.tts.TextToSpeech
+import android.util.Log
+
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
+import androidx.core.app.ActivityCompat
+import androidx.lifecycle.lifecycleScope
+
+import com.google.android.gms.location.FusedLocationProviderClient
+import com.google.android.gms.location.LocationCallback
+import com.google.android.gms.location.LocationRequest
+import com.google.android.gms.location.LocationResult
+import com.google.android.gms.location.LocationServices
+import com.google.android.gms.location.Priority
+
+import com.google.android.gms.maps.CameraUpdateFactory
+import com.google.android.gms.maps.model.LatLng
+
+import com.google.maps.android.compose.GoogleMap
+import com.google.maps.android.compose.Marker
+import com.google.maps.android.compose.MarkerState
+import com.google.maps.android.compose.Polyline
+import com.google.maps.android.compose.rememberCameraPositionState
+
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+
+import okhttp3.HttpUrl
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
+
+import org.json.JSONArray
+import org.json.JSONObject
+
+import java.util.Locale
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+
+
+class MainActivity : ComponentActivity() {
+    private var esp32Status by
+    mutableStateOf("ESP32: Waiting")
+
+    private var lastAcceptedLocation: LatLng? = null
+
+    private fun sendNavigationPacketToESP32() {
+
+        if (
+            navigationPacket.isBlank() ||
+            navigationPacket == "{}"
+        ) {
+            return
+        }
+
+        try {
+
+            val body =
+                navigationPacket.toRequestBody(
+                    "application/json; charset=utf-8"
+                        .toMediaType()
+                )
+
+            val request =
+                Request.Builder()
+                    .url(
+                        "http://$ESP32_IP/navigation"
+                    )
+                    .post(body)
+                    .build()
+
+            httpClient
+                .newCall(request)
+                .enqueue(
+
+                    object : okhttp3.Callback {
+
+                        override fun onFailure(
+                            call: okhttp3.Call,
+                            e: java.io.IOException
+                        ) {
+                            runOnUiThread {
+                            esp32Status =
+                                "ESP32: Disconnected"
+                        }
+
+                            Log.e(
+                                "ESP32",
+                                "SEND FAILED: ${e.message}"
+                            )
+                        }
+
+                        override fun onResponse(
+                            call: okhttp3.Call,
+                            response: okhttp3.Response
+                        ) {
+
+                            response.use {
+                                runOnUiThread {
+
+                                    esp32Status =
+                                        if (response.isSuccessful) {
+                                            "ESP32: Connected"
+                                        } else {
+                                            "ESP32: HTTP ${response.code}"
+                                        }
+                                }
+
+                                Log.d(
+                                    "ESP32",
+                                    "DATA SENT - HTTP ${response.code}"
+                                )
+                            }
+                        }
+                    }
+                )
+
+        } catch (e: Exception) {
+
+            Log.e(
+                "ESP32",
+                "SEND ERROR",
+                e
+            )
+        }
+    }
+    private var gpsAccuracy by
+    mutableStateOf(0f)
+
+    companion object {
+
+        /*
+         * =========================================================
+         * PUT YOUR OPENROUTESERVICE BASIC KEY HERE
+         * =========================================================
+         *
+         * This is the key you just created on the ORS dashboard.
+         *
+         * DO NOT put your Google API key here.
+         */
+        private const val ESP32_IP =
+            "10.251.241.78"
+        private const val ORS_API_KEY =
+            "eyJvcmciOiI1YjNjZTM1OTc4NTExMTAwMDFjZjYyNDgiLCJpZCI6ImFkNDJiMjhhZDk3ZDQ5MTdhZWQ4OGU3MTg5YWNkZmUxIiwiaCI6Im11cm11cjY0In0="
+
+        private const val TAG_GEOCODE = "ORSGeocode"
+        private const val TAG_ROUTE = "ORSRoute"
+    }
+
+
+
+    private val httpClient =
+        OkHttpClient()
+
+
+   
+
+    private lateinit var fusedLocationClient:
+            FusedLocationProviderClient
+
+    private lateinit var locationCallback:
+            LocationCallback
+
+
+    private val locationRequest =
+        LocationRequest.Builder(
+            Priority.PRIORITY_HIGH_ACCURACY,
+            1000L
+        )
+            .setMinUpdateIntervalMillis(1000L)
+            .build()
+
+
+    
+
+    private lateinit var speechRecognizer:
+            SpeechRecognizer
+
+    private lateinit var textToSpeech:
+            TextToSpeech
+
+
+    
+
+    private var currentLocation by
+    mutableStateOf<LatLng?>(null)
+
+    private var destinationLocation by
+    mutableStateOf<LatLng?>(null)
+
+    private var destinationText by
+    mutableStateOf("")
+
+    private var routePoints by
+    mutableStateOf<List<LatLng>>(
+        emptyList()
+    )
+
+    private var statusText by
+    mutableStateOf(
+        "Starting BlindNav..."
+    )
+
+    private var isListening by
+    mutableStateOf(false)
+
+    private var routeDistance by
+    mutableStateOf("")
+
+    private var routeDuration by
+    mutableStateOf("")
+    private var deviationMeters by mutableStateOf(0.0)
+
+    private var pathSide by mutableStateOf("NO_ROUTE")
+
+    private var navigationCommand by mutableStateOf("WAIT")
+
+    private var distanceToDestination by mutableStateOf(0.0)
+
+    private var navigationPacket by mutableStateOf("{}")
+
+    private var lastSpokenCommand = ""
+
+
+    
+
+    private val locationPermissionLauncher =
+        registerForActivityResult(
+            ActivityResultContracts.RequestMultiplePermissions()
+        ) { permissions ->
+
+            val fine =
+                permissions[
+                    Manifest.permission.ACCESS_FINE_LOCATION
+                ] == true
+
+            val coarse =
+                permissions[
+                    Manifest.permission.ACCESS_COARSE_LOCATION
+                ] == true
+
+            if (fine || coarse) {
+
+                startLocationUpdates()
+
+            } else {
+
+                statusText =
+                    "Location permission denied."
+            }
+        }
+
+
+   
+
+    private val microphonePermissionLauncher =
+        registerForActivityResult(
+            ActivityResultContracts.RequestPermission()
+        ) { granted ->
+
+            if (granted) {
+
+                startVoiceRecognition()
+
+            } else {
+
+                statusText =
+                    "Microphone permission denied."
+            }
+        }
+
+
+    
+    
+
+    override fun onCreate(
+        savedInstanceState: Bundle?
+    ) {
+
+        super.onCreate(savedInstanceState)
+
+
+        
+
+        fusedLocationClient =
+            LocationServices
+                .getFusedLocationProviderClient(
+                    this
+                )
+
+
+        locationCallback =
+            object : LocationCallback() {
+
+                override fun onLocationResult(
+                    result: LocationResult
+                ) {
+
+                    val location =
+                        result.lastLocation ?: return
+                    gpsAccuracy =
+                        location.accuracy
+                    Log.d(
+                        "GPSAccuracy",
+                        "Accuracy = ${location.accuracy} metres"
+                    )
+
+
+                    val userLocation =
+                        LatLng(
+                            location.latitude,
+                            location.longitude
+                        )
+
+
+                    currentLocation =
+                        userLocation
+
+
+                    /*
+                     * NEW:
+                     *
+                     * Calculate navigation data
+                     * every GPS update.
+                     */
+
+                    updateNavigationState(
+                        userLocation
+                    )
+
+
+                    Log.d(
+                        "BlindNavGPS",
+                        "Location = ${location.latitude}, ${location.longitude}"
+                    )
+
+                    if (
+                        statusText == "Searching for GPS..."
+                    ) {
+
+                        statusText =
+                            "GPS ready. Speak destination."
+
+                        speak(
+                            "Location detected. Tap speak destination and say where you want to go."
+                        )
+                    }
+
+                    Log.d(
+                        "BlindNavGPS",
+                        "Location = ${location.latitude}, ${location.longitude}"
+                    )
+                }
+            }
+
+
+       
+
+        textToSpeech =
+            TextToSpeech(this) { result ->
+
+                if (
+                    result == TextToSpeech.SUCCESS
+                ) {
+
+                    textToSpeech.language =
+                        Locale.getDefault()
+                }
+            }
+
+
+      
+
+        speechRecognizer =
+            SpeechRecognizer
+                .createSpeechRecognizer(
+                    this
+                )
+
+        setupSpeechRecognizer()
+
+
+        
+
+        requestLocationPermission()
+
+
+       
+
+        setContent {
+
+            MaterialTheme {
+
+                val cameraPositionState =
+                    rememberCameraPositionState()
+
+
+               
+
+                LaunchedEffect(
+                    currentLocation
+                ) {
+
+                    if (
+                        routePoints.isEmpty()
+                    ) {
+
+                        currentLocation
+                            ?.let { location ->
+
+                                cameraPositionState.animate(
+
+                                    CameraUpdateFactory
+                                        .newLatLngZoom(
+                                            location,
+                                            17f
+                                        )
+                                )
+                            }
+                    }
+                }
+
+
+
+                LaunchedEffect(
+                    routePoints
+                ) {
+
+                    if (
+                        routePoints.isNotEmpty()
+                    ) {
+
+                        cameraPositionState.animate(
+
+                            CameraUpdateFactory
+                                .newLatLngZoom(
+                                    routePoints.first(),
+                                    16f
+                                )
+                        )
+                    }
+                }
+
+
+                Box(
+                    modifier =
+                        Modifier.fillMaxSize()
+                ) {
+
+
+
+                    GoogleMap(
+
+                        modifier =
+                            Modifier.fillMaxSize(),
+
+                        cameraPositionState =
+                            cameraPositionState
+
+                    ) {
+
+
+                       
+
+                        currentLocation
+                            ?.let { location ->
+
+                                Marker(
+
+                                    state =
+                                        MarkerState(
+                                            position =
+                                                location
+                                        ),
+
+                                    title =
+                                        "Your Location"
+                                )
+                            }
+
+
+                       
+                       
+
+                        destinationLocation
+                            ?.let { destination ->
+
+                                Marker(
+
+                                    state =
+                                        MarkerState(
+                                            position =
+                                                destination
+                                        ),
+
+                                    title =
+                                        destinationText
+                                )
+                            }
+
+
+                        
+
+                        if (
+                            routePoints.isNotEmpty()
+                        ) {
+
+                            Polyline(
+
+                                points =
+                                    routePoints,
+
+                                width =
+                                    14f
+                            )
+                        }
+                    }
+
+
+
+                    Card(
+
+                        modifier =
+                            Modifier
+                                .align(
+                                    Alignment.BottomCenter
+                                )
+                                .fillMaxWidth()
+                                .padding(12.dp)
+
+                    ) {
+
+
+                        Column(
+
+                            modifier =
+                                Modifier.padding(
+                                    16.dp
+                                ),
+
+                            horizontalAlignment =
+                                Alignment.CenterHorizontally,
+
+                            verticalArrangement =
+                                Arrangement.spacedBy(
+                                    8.dp
+                                )
+
+                        ) {
+
+
+                            Text(
+
+                                text =
+                                    "SIH BlindNav",
+
+                                style =
+                                    MaterialTheme
+                                        .typography
+                                        .headlineSmall
+                            )
+                            Text(
+                                text = esp32Status
+                            )
+
+
+                            Text(
+
+                                text =
+
+                                    if (
+                                        destinationText
+                                            .isBlank()
+                                    ) {
+
+                                        "Destination: Not selected"
+
+                                    } else {
+
+                                        "Destination: $destinationText"
+                                    }
+                            )
+
+
+                            if (
+                                routeDistance
+                                    .isNotBlank()
+                            ) {
+
+                                Text(
+                                    text =
+                                        "Walking distance: $routeDistance"
+                                )
+                            }
+
+
+                            if (
+                                routeDuration
+                                    .isNotBlank()
+                            ) {
+
+                                Text(
+                                    text =
+                                        "Estimated time: $routeDuration"
+                                )
+                            }
+
+
+                            Text(
+                                text =
+                                    statusText
+                            )
+                            if (
+                                routePoints.isNotEmpty()
+                            ) {
+
+                                Text(
+                                    text =
+                                        "Path: $pathSide"
+                                )
+
+
+                                Text(
+                                    text =
+                                        "Deviation: %.1f m".format(
+                                            deviationMeters
+                                        )
+                                )
+
+
+                                Text(
+                                    text =
+                                        "Command: $navigationCommand"
+                                )
+                                Text(
+                                    text =
+                                        "GPS accuracy: %.1f m".format(
+                                            gpsAccuracy
+                                        )
+                                )
+
+
+                                Text(
+                                    text =
+                                        "Destination: %.1f m away".format(
+                                            distanceToDestination
+                                        )
+                                )
+                            }
+
+
+
+                          
+
+                            Button(
+
+                                modifier =
+                                    Modifier
+                                        .fillMaxWidth()
+                                        .semantics {
+                                            contentDescription =
+                                                "Speak destination. Double tap to start voice recognition."
+                                        },
+
+                                enabled =
+                                    !isListening,
+
+                                onClick = {
+
+                                    checkMicrophonePermission()
+                                }
+
+                            ) {
+
+
+                                Text(
+
+                                    if (
+                                        isListening
+                                    ) {
+
+                                        "Listening..."
+
+                                    } else {
+
+                                        "Speak Destination"
+                                    }
+                                )
+                            }
+                            
+
+                            if (
+                                destinationText
+                                    .isNotBlank()
+                            ) {
+
+                                Button(
+
+                                    modifier =
+                                        Modifier
+                                            .fillMaxWidth(),
+
+                                    enabled =
+                                        currentLocation != null,
+
+                                    onClick = {
+
+                                        findDestinationAndRoute()
+                                    }
+
+                                ) {
+
+                                    Text(
+                                        "Find Walking Route"
+                                    )
+                                }
+                            }
+
+
+                            // =================================================
+                            // CLEAR
+                            // =================================================
+
+                            if (
+                                routePoints
+                                    .isNotEmpty()
+                            ) {
+
+                                Button(
+
+                                    modifier =
+                                        Modifier
+                                            .fillMaxWidth(),
+
+                                    onClick = {
+
+                                        destinationText =
+                                            ""
+
+                                        destinationLocation =
+                                            null
+
+                                        routePoints =
+                                            emptyList()
+                                        deviationMeters =
+                                            0.0
+
+                                        pathSide =
+                                            "NO_ROUTE"
+
+                                        navigationCommand =
+                                            "WAIT"
+
+                                        distanceToDestination =
+                                            0.0
+
+                                        navigationPacket =
+                                            "{}"
+
+                                        lastSpokenCommand =
+                                            ""
+
+                                        routeDistance =
+                                            ""
+
+                                        routeDuration =
+                                            ""
+
+                                        statusText =
+                                            "Speak a new destination."
+                                    }
+
+                                ) {
+
+                                    Text(
+                                        "Clear Route"
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+
+    private fun requestLocationPermission() {
+
+        if (
+
+            ActivityCompat.checkSelfPermission(
+                this,
+                Manifest.permission.ACCESS_FINE_LOCATION
+            ) ==
+            PackageManager.PERMISSION_GRANTED
+
+        ) {
+
+            startLocationUpdates()
+
+        } else {
+
+            locationPermissionLauncher.launch(
+
+                arrayOf(
+
+                    Manifest.permission.ACCESS_FINE_LOCATION,
+
+                    Manifest.permission.ACCESS_COARSE_LOCATION
+                )
+            )
+        }
+    }
+
+
+   
+
+    private fun startLocationUpdates() {
+
+        if (
+
+            ActivityCompat.checkSelfPermission(
+                this,
+                Manifest.permission.ACCESS_FINE_LOCATION
+            ) !=
+            PackageManager.PERMISSION_GRANTED
+
+            &&
+
+            ActivityCompat.checkSelfPermission(
+                this,
+                Manifest.permission.ACCESS_COARSE_LOCATION
+            ) !=
+            PackageManager.PERMISSION_GRANTED
+
+        ) {
+
+            return
+        }
+
+
+        statusText =
+            "Searching for GPS..."
+
+
+        fusedLocationClient
+            .requestLocationUpdates(
+
+                locationRequest,
+
+                locationCallback,
+
+                mainLooper
+            )
+    }
+
+
+    
+
+    private fun checkMicrophonePermission() {
+
+        if (
+
+            ActivityCompat.checkSelfPermission(
+                this,
+                Manifest.permission.RECORD_AUDIO
+            ) !=
+            PackageManager.PERMISSION_GRANTED
+
+        ) {
+
+            microphonePermissionLauncher.launch(
+
+                Manifest.permission.RECORD_AUDIO
+            )
+
+        } else {
+
+            startVoiceRecognition()
+        }
+    }
+
+
+  
+    private fun setupSpeechRecognizer() {
+
+        speechRecognizer
+            .setRecognitionListener(
+
+                object : RecognitionListener {
+
+
+                    override fun onReadyForSpeech(
+                        params: Bundle?
+                    ) {
+
+                        isListening = true
+
+                        statusText =
+                            "Listening..."
+
+                        speak(
+                            "Listening"
+                        )
+                    }
+
+
+                    override fun onBeginningOfSpeech() {
+
+                        isListening =
+                            true
+                    }
+
+
+                    override fun onRmsChanged(
+                        rmsdB: Float
+                    ) {}
+
+
+                    override fun onBufferReceived(
+                        buffer: ByteArray?
+                    ) {}
+
+
+                    override fun onEndOfSpeech() {
+
+                        isListening =
+                            false
+
+                        statusText =
+                            "Understanding destination..."
+                    }
+
+
+                    override fun onError(
+                        error: Int
+                    ) {
+
+                        isListening =
+                            false
+
+
+                        statusText =
+
+                            when (error) {
+
+                                SpeechRecognizer.ERROR_NO_MATCH ->
+
+                                    "Could not understand. Try again."
+
+
+                                SpeechRecognizer.ERROR_SPEECH_TIMEOUT ->
+
+                                    "No speech detected."
+
+
+                                SpeechRecognizer.ERROR_NETWORK ->
+
+                                    "Speech network error."
+
+
+                                else ->
+
+                                    "Speech error: $error"
+                            }
+                    }
+
+
+                    override fun onResults(
+                        results: Bundle?
+                    ) {
+
+                        isListening =
+                            false
+
+
+                        val matches =
+
+                            results
+                                ?.getStringArrayList(
+
+                                    SpeechRecognizer
+                                        .RESULTS_RECOGNITION
+                                )
+
+
+                        val spokenText =
+
+                            matches
+                                ?.firstOrNull()
+
+
+                        if (
+                            spokenText
+                                .isNullOrBlank()
+                        ) {
+
+                            statusText =
+                                "No destination recognized."
+
+                            return
+                        }
+
+
+                        destinationText =
+                            spokenText.trim()
+
+
+                        statusText =
+                            "Destination heard: $destinationText"
+
+
+                        speak(
+                            "Destination heard. $destinationText. Finding walking route."
+                        )
+
+                        /*
+                         * Automatically find the destination
+                         * and walking route.
+                         */
+                        findDestinationAndRoute()
+                    }
+
+
+                    override fun onPartialResults(
+                        partialResults: Bundle?
+                    ) {}
+
+
+                    override fun onEvent(
+                        eventType: Int,
+                        params: Bundle?
+                    ) {}
+                }
+            )
+    }
+
+
+
+    
+
+    private fun startVoiceRecognition() {
+
+        if (
+
+            !SpeechRecognizer
+                .isRecognitionAvailable(
+                    this
+                )
+
+        ) {
+
+            statusText =
+                "Speech recognition unavailable."
+
+            return
+        }
+
+
+        val intent =
+
+            Intent(
+                RecognizerIntent.ACTION_RECOGNIZE_SPEECH
+            ).apply {
+
+
+                putExtra(
+
+                    RecognizerIntent.EXTRA_LANGUAGE_MODEL,
+
+                    RecognizerIntent.LANGUAGE_MODEL_FREE_FORM
+                )
+
+
+                putExtra(
+
+                    RecognizerIntent.EXTRA_LANGUAGE,
+
+                    Locale.getDefault()
+                )
+
+
+                putExtra(
+
+                    RecognizerIntent.EXTRA_MAX_RESULTS,
+
+                    5
+                )
+            }
+
+
+        speechRecognizer.cancel()
+
+
+        speechRecognizer
+            .startListening(
+                intent
+            )
+    }
+
+
+
+
+    private fun findDestinationAndRoute() {
+
+        val origin =
+            currentLocation
+
+
+        if (
+            origin == null
+        ) {
+
+            statusText =
+                "Waiting for GPS."
+
+            speak(
+                "Waiting for GPS."
+            )
+
+            return
+        }
+
+
+        if (
+            destinationText
+                .isBlank()
+        ) {
+
+            statusText =
+                "Please speak a destination."
+
+            return
+        }
+
+
+        lifecycleScope.launch {
+
+
+
+
+            statusText =
+                "Searching for $destinationText..."
+
+
+            val geocodeResult =
+
+                withContext(
+                    Dispatchers.IO
+                ) {
+
+                    geocodeWithORS(
+
+                        query =
+                            destinationText,
+
+                        current =
+                            origin
+                    )
+                }
+
+
+            if (
+                geocodeResult.location == null
+            ) {
+
+                statusText =
+                    "Destination search failed: ${geocodeResult.error}"
+
+
+                speak(
+                    "I could not find the destination."
+                )
+
+                return@launch
+            }
+
+
+            val destination =
+                geocodeResult.location
+
+
+            destinationLocation =
+                destination
+
+
+            Log.d(
+
+                TAG_GEOCODE,
+
+                "FOUND = ${destination.latitude}, ${destination.longitude}"
+            )
+
+
+
+
+            statusText =
+                "Calculating walking route..."
+
+
+            val routeResult =
+
+                withContext(
+                    Dispatchers.IO
+                ) {
+
+                    getWalkingRoute(
+
+                        origin =
+                            origin,
+
+                        destination =
+                            destination
+                    )
+                }
+
+
+            if (
+                routeResult.points
+                    .isEmpty()
+            ) {
+
+                statusText =
+                    "Route failed: ${routeResult.error}"
+
+
+                speak(
+                    "I could not calculate the walking route."
+                )
+
+                return@launch
+            }
+
+
+            routePoints =
+                routeResult.points
+            lastAcceptedLocation =
+                null
+            currentLocation?.let {
+
+                updateNavigationState(
+                    it
+                )
+            }
+
+
+            routeDistance =
+
+                formatDistance(
+                    routeResult.distanceMeters
+                )
+
+
+            routeDuration =
+
+                formatTime(
+                    routeResult.durationSeconds
+                )
+
+
+            statusText =
+                "Walking route ready."
+
+            speak(
+                "Route ready. Distance $routeDistance. Estimated walking time $routeDuration. Start walking."
+            )
+
+
+            speak(
+
+                "Walking route found. Distance $routeDistance. Estimated time $routeDuration."
+            )
+        }
+    }
+
+
+
+    private data class DeviationResult(
+        val distanceMeters: Double,
+        val side: String
+    )
+    private fun distanceBetween(
+        a: LatLng,
+        b: LatLng
+    ): Double {
+
+        val earthRadius = 6371000.0
+
+        val lat1 = Math.toRadians(a.latitude)
+        val lat2 = Math.toRadians(b.latitude)
+
+        val deltaLat =
+            Math.toRadians(
+                b.latitude - a.latitude
+            )
+
+        val deltaLng =
+            Math.toRadians(
+                b.longitude - a.longitude
+            )
+
+        val h =
+            Math.sin(deltaLat / 2) *
+                    Math.sin(deltaLat / 2) +
+                    Math.cos(lat1) *
+                    Math.cos(lat2) *
+                    Math.sin(deltaLng / 2) *
+                    Math.sin(deltaLng / 2)
+
+        val c =
+            2 * Math.atan2(
+                Math.sqrt(h),
+                Math.sqrt(1 - h)
+            )
+
+        return earthRadius * c
+    }
+    private fun calculateDeviation(
+        user: LatLng,
+        route: List<LatLng>
+    ): DeviationResult {
+
+        if (route.size < 2) {
+
+            return DeviationResult(
+                0.0,
+                "NO_ROUTE"
+            )
+        }
+
+        var minimumDistance =
+            Double.MAX_VALUE
+
+        var nearestSide =
+            "ON_PATH"
+
+
+        for (i in 0 until route.size - 1) {
+
+            val start =
+                route[i]
+
+            val end =
+                route[i + 1]
+
+
+            /*
+             * Convert geographic differences
+             * approximately into metres.
+             */
+
+            val referenceLatitude =
+                (
+                        start.latitude +
+                                end.latitude +
+                                user.latitude
+                        ) / 3.0
+
+
+            val metersPerDegreeLatitude =
+                111320.0
+
+
+            val metersPerDegreeLongitude =
+                111320.0 *
+                        Math.cos(
+                            Math.toRadians(
+                                referenceLatitude
+                            )
+                        )
+
+
+            /*
+             * Start becomes 0,0
+             */
+
+            val bx =
+                (end.longitude - start.longitude) *
+                        metersPerDegreeLongitude
+
+            val by =
+                (end.latitude - start.latitude) *
+                        metersPerDegreeLatitude
+
+
+            val px =
+                (user.longitude - start.longitude) *
+                        metersPerDegreeLongitude
+
+            val py =
+                (user.latitude - start.latitude) *
+                        metersPerDegreeLatitude
+
+
+            val segmentLengthSquared =
+                bx * bx + by * by
+
+
+            if (segmentLengthSquared == 0.0) {
+                continue
+            }
+
+
+            var t =
+                (px * bx + py * by) /
+                        segmentLengthSquared
+
+
+            t =
+                t.coerceIn(
+                    0.0,
+                    1.0
+                )
+
+
+            val nearestX =
+                t * bx
+
+            val nearestY =
+                t * by
+
+
+            val dx =
+                px - nearestX
+
+            val dy =
+                py - nearestY
+
+
+            val distance =
+                Math.sqrt(
+                    dx * dx +
+                            dy * dy
+                )
+
+
+            /*
+             * Cross product determines
+             * which side of route.
+             */
+
+            val cross =
+                bx * py -
+                        by * px
+
+
+            val side =
+
+                if (cross > 0) {
+
+                    "LEFT_OF_PATH"
+
+                } else if (cross < 0) {
+
+                    "RIGHT_OF_PATH"
+
+                } else {
+
+                    "ON_PATH"
+                }
+
+
+            if (distance < minimumDistance) {
+
+                minimumDistance =
+                    distance
+
+                nearestSide =
+                    side
+            }
+        }
+
+
+        /*
+         * GPS normally has several metres
+         * of error.
+         */
+
+        if (minimumDistance <= 7.0) {
+
+            nearestSide =
+                "ON_PATH"
+        }
+
+
+        return DeviationResult(
+            minimumDistance,
+            nearestSide
+        )
+    }
+    private fun updateNavigationState(
+        user: LatLng
+    ) {
+
+        /*
+         * No route yet.
+         */
+        if (gpsAccuracy > 25f) {
+
+            pathSide =
+                "GPS_UNCERTAIN"
+
+            navigationCommand =
+                "WAIT"
+
+            createNavigationPacket(
+                user
+            )
+
+            return
+        }
+
+        if (
+            routePoints.size < 2 ||
+            destinationLocation == null
+        ) {
+
+            pathSide =
+                "NO_ROUTE"
+
+            navigationCommand =
+                "WAIT"
+
+            createNavigationPacket(
+                user
+            )
+
+            return
+        }
+
+
+
+
+        val destination =
+            destinationLocation!!
+
+        val previousLocation =
+            lastAcceptedLocation
+
+
+        if (previousLocation == null) {
+
+            // First location after route is created
+            lastAcceptedLocation =
+                user
+
+            distanceToDestination =
+                distanceBetween(
+                    user,
+                    destination
+                )
+
+        } else {
+
+            // Calculate how far GPS says we moved
+            val movedDistance =
+                distanceBetween(
+                    previousLocation,
+                    user
+                )
+
+
+            /*
+             * GPS can drift even while stationary.
+             *
+             * Ignore small movement caused by GPS noise.
+             */
+            val requiredMovement =
+                maxOf(
+                    8.0,
+                    gpsAccuracy.toDouble()
+                )
+
+
+            if (movedDistance >= requiredMovement) {
+
+                // User has probably actually moved
+                lastAcceptedLocation =
+                    user
+
+                distanceToDestination =
+                    distanceBetween(
+                        user,
+                        destination
+                    )
+            }
+        }
+
+
+
+        // =========================================================
+        // ARRIVAL
+        // =========================================================
+
+        if (
+            distanceToDestination <= 12.0
+        ) {
+
+            deviationMeters =
+                0.0
+
+            pathSide =
+                "ARRIVED"
+
+            navigationCommand =
+                "ARRIVED"
+
+            createNavigationPacket(
+                user
+            )
+
+            speakNavigationCommand()
+
+            return
+        }
+
+
+
+        val stableLocation =
+            lastAcceptedLocation ?: user
+
+        val deviation =
+            calculateDeviation(
+                stableLocation,
+                routePoints
+            )
+
+
+        deviationMeters =
+            deviation.distanceMeters
+
+
+        pathSide =
+            deviation.side
+
+
+        navigationCommand =
+            when {
+
+                // Definitely close enough to route
+                deviation.distanceMeters <= 15.0 -> {
+                    "ON_PATH"
+                }
+
+                // Very far away
+                deviation.distanceMeters >= 40.0 -> {
+                    "ROUTE_LOST"
+                }
+
+                deviation.side == "LEFT_OF_PATH" -> {
+                    "MOVE_RIGHT"
+                }
+
+                deviation.side == "RIGHT_OF_PATH" -> {
+                    "MOVE_LEFT"
+                }
+
+                else -> {
+                    "ON_PATH"
+                }
+            }
+
+
+        createNavigationPacket(
+            user
+        )
+
+
+        speakNavigationCommand()
+    }
+    private fun speakNavigationCommand() {
+
+        if (navigationCommand == lastSpokenCommand) {
+            return
+        }
+
+        lastSpokenCommand = navigationCommand
+
+        when (navigationCommand) {
+
+            "MOVE_LEFT" -> {
+
+                speak(
+                    "Move slightly left"
+                )
+            }
+
+            "MOVE_RIGHT" -> {
+
+                speak(
+                    "Move slightly right"
+                )
+            }
+
+            "ON_PATH" -> {
+                speak(
+                    "You are on the correct path"
+                )
+            }
+
+            "ARRIVED" -> {
+                speak("You have arrived at your destination")
+            }
+            "ROUTE_LOST" -> {
+
+                speak(
+                    "You are far away from the route. Please stop while the route is checked."
+                )
+            }
+        }
+    }
+    private fun createNavigationPacket(
+        user: LatLng
+    ) {
+
+        try {
+
+            val json = JSONObject()
+
+            json.put(
+                "lat",
+                user.latitude
+            )
+
+            json.put(
+                "lng",
+                user.longitude
+            )
+
+            json.put(
+                "deviation",
+                deviationMeters
+            )
+
+            json.put(
+                "side",
+                pathSide
+            )
+
+            json.put(
+                "command",
+                navigationCommand
+            )
+
+            json.put(
+                "distance_to_destination",
+                distanceToDestination
+            )
+
+            json.put(
+                "arrived",
+                navigationCommand == "ARRIVED"
+            )
+
+            navigationPacket =
+                json.toString()
+
+            Log.d(
+                "NavPacket",
+                navigationPacket
+            )
+            sendNavigationPacketToESP32()
+
+        } catch (e: Exception) {
+
+            Log.e(
+                "NavPacket",
+                "Packet error",
+                e
+            )
+        }
+    }
+
+    private fun geocodeWithORS(
+
+        query: String,
+
+        current: LatLng
+
+    ): GeocodeResult {
+
+
+        return try {
+
+
+            /*
+             * ORS Geocoder:
+             *
+             * https://api.openrouteservice.org/geocode/search
+             *
+             * Current GPS is supplied as a focus point.
+             * This helps ORS choose nearby results.
+             */
+
+            val url =
+
+                HttpUrl.Builder()
+
+                    .scheme(
+                        "https"
+                    )
+
+                    .host(
+                        "api.openrouteservice.org"
+                    )
+
+                    .addPathSegment(
+                        "geocode"
+                    )
+
+                    .addPathSegment(
+                        "search"
+                    )
+
+                    .addQueryParameter(
+                        "api_key",
+                        ORS_API_KEY
+                    )
+
+                    .addQueryParameter(
+                        "text",
+                        query
+                    )
+
+                    .addQueryParameter(
+                        "size",
+                        "1"
+                    )
+
+                    .addQueryParameter(
+                        "focus.point.lat",
+                        current.latitude
+                            .toString()
+                    )
+
+                    .addQueryParameter(
+                        "focus.point.lon",
+                        current.longitude
+                            .toString()
+                    )
+
+                    .build()
+
+
+            Log.d(
+                TAG_GEOCODE,
+                "Searching = $query"
+            )
+
+
+            Log.d(
+                TAG_GEOCODE,
+                "URL = ${url.toString().replace(ORS_API_KEY, "HIDDEN_KEY")}"
+            )
+
+
+            val request =
+
+                Request.Builder()
+
+                    .url(
+                        url
+                    )
+
+                    .get()
+
+                    .addHeader(
+                        "Accept",
+                        "application/json"
+                    )
+
+                    .build()
+
+
+            httpClient
+                .newCall(request)
+                .execute()
+                .use { response ->
+
+
+                    val responseText =
+
+                        response
+                            .body
+                            ?.string()
+                            .orEmpty()
+
+
+                    Log.d(
+                        TAG_GEOCODE,
+                        "HTTP = ${response.code}"
+                    )
+
+
+                    Log.d(
+                        TAG_GEOCODE,
+                        "RESPONSE = $responseText"
+                    )
+
+
+                    if (
+                        !response.isSuccessful
+                    ) {
+
+                        return GeocodeResult(
+
+                            location =
+                                null,
+
+                            error =
+                                "HTTP ${response.code}: $responseText"
+                        )
+                    }
+
+
+                    val json =
+
+                        JSONObject(
+                            responseText
+                        )
+
+
+                    val features =
+
+                        json.optJSONArray(
+                            "features"
+                        )
+
+
+                    if (
+
+                        features == null
+                        ||
+                        features.length() == 0
+
+                    ) {
+
+                        return GeocodeResult(
+
+                            location =
+                                null,
+
+                            error =
+                                "No matching place found"
+                        )
+                    }
+
+
+                    val feature =
+
+                        features
+                            .getJSONObject(
+                                0
+                            )
+
+
+                    val geometry =
+
+                        feature
+                            .getJSONObject(
+                                "geometry"
+                            )
+
+
+                    val coordinates =
+
+                        geometry
+                            .getJSONArray(
+                                "coordinates"
+                            )
+
+
+                    /*
+                     * IMPORTANT:
+                     *
+                     * ORS gives:
+                     *
+                     * [ longitude, latitude ]
+                     */
+
+                    val longitude =
+                        coordinates
+                            .getDouble(
+                                0
+                            )
+
+
+                    val latitude =
+                        coordinates
+                            .getDouble(
+                                1
+                            )
+
+
+                    GeocodeResult(
+
+                        location =
+                            LatLng(
+                                latitude,
+                                longitude
+                            ),
+
+                        error =
+                            null
+                    )
+                }
+
+
+        } catch (
+            e: Exception
+        ) {
+
+
+            Log.e(
+                TAG_GEOCODE,
+                "Geocode exception",
+                e
+            )
+
+
+            GeocodeResult(
+
+                location =
+                    null,
+
+                error =
+                    e.message ?: "Unknown error"
+            )
+        }
+    }
+
+
+    private fun getWalkingRoute(
+
+        origin: LatLng,
+
+        destination: LatLng
+
+    ): RouteResult {
+
+
+        return try {
+
+
+            /*
+             * ORS requires coordinates:
+             *
+             * [ longitude, latitude ]
+             *
+             * NOT:
+             *
+             * [ latitude, longitude ]
+             */
+
+
+            val coordinatesArray =
+
+                JSONArray()
+
+
+            coordinatesArray.put(
+
+                JSONArray()
+                    .put(
+                        origin.longitude
+                    )
+                    .put(
+                        origin.latitude
+                    )
+            )
+
+
+            coordinatesArray.put(
+
+                JSONArray()
+                    .put(
+                        destination.longitude
+                    )
+                    .put(
+                        destination.latitude
+                    )
+            )
+
+
+            val jsonBody =
+
+                JSONObject()
+                    .put(
+                        "coordinates",
+                        coordinatesArray
+                    )
+
+                    .put(
+                        "instructions",
+                        false
+                    )
+
+
+            Log.d(
+
+                TAG_ROUTE,
+
+                "Origin = ${origin.longitude},${origin.latitude}"
+            )
+
+
+            Log.d(
+
+                TAG_ROUTE,
+
+                "Destination = ${destination.longitude},${destination.latitude}"
+            )
+
+
+            val body =
+
+                jsonBody
+                    .toString()
+                    .toRequestBody(
+
+                        "application/json; charset=utf-8"
+                            .toMediaType()
+                    )
+
+
+            val request =
+
+                Request.Builder()
+
+                    .url(
+
+                        "https://api.openrouteservice.org/v2/directions/foot-walking/geojson"
+                    )
+
+                    .post(
+                        body
+                    )
+
+                    .addHeader(
+                        "Authorization",
+                        ORS_API_KEY
+                    )
+
+                    .addHeader(
+                        "Content-Type",
+                        "application/json"
+                    )
+
+                    .addHeader(
+                        "Accept",
+                        "application/geo+json"
+                    )
+
+                    .build()
+
+
+            httpClient
+                .newCall(request)
+                .execute()
+                .use { response ->
+
+
+                    val responseText =
+
+                        response
+                            .body
+                            ?.string()
+                            .orEmpty()
+
+
+                    Log.d(
+                        TAG_ROUTE,
+                        "HTTP = ${response.code}"
+                    )
+
+
+                    Log.d(
+                        TAG_ROUTE,
+                        "RESPONSE = $responseText"
+                    )
+
+
+                    if (
+                        !response.isSuccessful
+                    ) {
+
+                        return RouteResult(
+
+                            points =
+                                emptyList(),
+
+                            distanceMeters =
+                                0.0,
+
+                            durationSeconds =
+                                0.0,
+
+                            error =
+                                "HTTP ${response.code}: $responseText"
+                        )
+                    }
+
+
+                    val json =
+
+                        JSONObject(
+                            responseText
+                        )
+
+
+                    val features =
+
+                        json.optJSONArray(
+                            "features"
+                        )
+
+
+                    if (
+
+                        features == null
+                        ||
+                        features.length() == 0
+
+                    ) {
+
+                        return RouteResult(
+
+                            points =
+                                emptyList(),
+
+                            distanceMeters =
+                                0.0,
+
+                            durationSeconds =
+                                0.0,
+
+                            error =
+                                "No walking route returned"
+                        )
+                    }
+
+
+                    val feature =
+
+                        features
+                            .getJSONObject(
+                                0
+                            )
+
+
+
+                    val geometry =
+
+                        feature
+                            .getJSONObject(
+                                "geometry"
+                            )
+
+
+                    val coordinates =
+
+                        geometry
+                            .getJSONArray(
+                                "coordinates"
+                            )
+
+
+                    val points =
+
+                        mutableListOf<LatLng>()
+
+
+                    for (
+                    i in 0 until
+                            coordinates.length()
+                    ) {
+
+
+                        val point =
+
+                            coordinates
+                                .getJSONArray(
+                                    i
+                                )
+
+
+                        val longitude =
+                            point.getDouble(
+                                0
+                            )
+
+
+                        val latitude =
+                            point.getDouble(
+                                1
+                            )
+
+
+                        points.add(
+
+                            LatLng(
+                                latitude,
+                                longitude
+                            )
+                        )
+                    }
+
+
+                    // -------------------------------------------------
+                    // DISTANCE + DURATION
+                    // -------------------------------------------------
+
+                    val properties =
+
+                        feature
+                            .getJSONObject(
+                                "properties"
+                            )
+
+
+                    val summary =
+
+                        properties
+                            .getJSONObject(
+                                "summary"
+                            )
+
+
+                    val distance =
+
+                        summary
+                            .optDouble(
+                                "distance",
+                                0.0
+                            )
+
+
+                    val duration =
+
+                        summary
+                            .optDouble(
+                                "duration",
+                                0.0
+                            )
+
+
+                    Log.d(
+
+                        TAG_ROUTE,
+
+                        "SUCCESS - ${points.size} points"
+                    )
+
+
+                    Log.d(
+
+                        TAG_ROUTE,
+
+                        "Distance = $distance metres"
+                    )
+
+
+                    Log.d(
+
+                        TAG_ROUTE,
+
+                        "Duration = $duration seconds"
+                    )
+
+
+                    RouteResult(
+
+                        points =
+                            points,
+
+                        distanceMeters =
+                            distance,
+
+                        durationSeconds =
+                            duration,
+
+                        error =
+                            null
+                    )
+                }
+
+
+        } catch (
+            e: Exception
+        ) {
+
+
+            Log.e(
+
+                TAG_ROUTE,
+
+                "Route exception",
+
+                e
+            )
+
+
+            RouteResult(
+
+                points =
+                    emptyList(),
+
+                distanceMeters =
+                    0.0,
+
+                durationSeconds =
+                    0.0,
+
+                error =
+                    e.message ?: "Unknown error"
+            )
+        }
+    }
+
+
+
+
+    private data class GeocodeResult(
+
+        val location:
+        LatLng?,
+
+        val error:
+        String?
+    )
+
+
+    private data class RouteResult(
+
+        val points:
+        List<LatLng>,
+
+        val distanceMeters:
+        Double,
+
+        val durationSeconds:
+        Double,
+
+        val error:
+        String?
+    )
+
+
+
+    private fun formatDistance(
+        meters: Double
+    ): String {
+
+
+        return if (
+            meters >= 1000
+        ) {
+
+
+            String.format(
+
+                Locale.getDefault(),
+
+                "%.2f km",
+
+                meters / 1000.0
+            )
+
+
+        } else {
+
+
+            "${meters.toInt()} metres"
+        }
+    }
+
+
+
+
+    private fun formatTime(
+        seconds: Double
+    ): String {
+
+
+        val minutes =
+
+            (seconds / 60)
+                .toInt()
+
+
+        return if (
+            minutes < 60
+        ) {
+
+
+            "$minutes minutes"
+
+
+        } else {
+
+
+            val hours =
+                minutes / 60
+
+
+            val remaining =
+                minutes % 60
+
+
+            "$hours h $remaining min"
+        }
+    }
+
+
+
+
+    private fun speak(
+        text: String
+    ) {
+
+
+        try {
+
+
+            textToSpeech.speak(
+
+                text,
+
+                TextToSpeech.QUEUE_FLUSH,
+
+                null,
+
+                "BlindNav"
+            )
+
+
+        } catch (
+            e: Exception
+        ) {
+
+
+            Log.e(
+                "BlindNavTTS",
+                "TTS error",
+                e
+            )
+        }
+    }
+
+
+    override fun onDestroy() {
+
+        super.onDestroy()
+
+
+        try {
+
+            fusedLocationClient
+                .removeLocationUpdates(
+                    locationCallback
+                )
+
+        } catch (
+            _: Exception
+        ) {}
+
+
+        try {
+
+            speechRecognizer
+                .destroy()
+
+        } catch (
+            _: Exception
+        ) {}
+
+
+        try {
+
+            textToSpeech
+                .stop()
+
+            textToSpeech
+                .shutdown()
+
+        } catch (
+            _: Exception
+        ) {}
+    }
+}
