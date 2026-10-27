@@ -158,19 +158,10 @@ class MainActivity : ComponentActivity() {
 
     companion object {
 
-        /*
-         * =========================================================
-         * PUT YOUR OPENROUTESERVICE BASIC KEY HERE
-         * =========================================================
-         *
-         * This is the key you just created on the ORS dashboard.
-         *
-         * DO NOT put your Google API key here.
-         */
         private const val ESP32_IP =
             "10.251.241.78"
         private const val ORS_API_KEY =
-            "eyJvcmciOiI1YjNjZTM1OTc4NTExMTAwMDFjZjYyNDgiLCJpZCI6ImFkNDJiMjhhZDk3ZDQ5MTdhZWQ4OGU3MTg5YWNkZmUxIiwiaCI6Im11cm11cjY0In0="
+            "YOUR API KEY"
 
         private const val TAG_GEOCODE = "ORSGeocode"
         private const val TAG_ROUTE = "ORSRoute"
@@ -346,12 +337,7 @@ class MainActivity : ComponentActivity() {
                         userLocation
 
 
-                    /*
-                     * NEW:
-                     *
-                     * Calculate navigation data
-                     * every GPS update.
-                     */
+                   
 
                     updateNavigationState(
                         userLocation
@@ -746,9 +732,6 @@ class MainActivity : ComponentActivity() {
                             }
 
 
-                            // =================================================
-                            // CLEAR
-                            // =================================================
 
                             if (
                                 routePoints
@@ -1582,7 +1565,7 @@ class MainActivity : ComponentActivity() {
 
         } else {
 
-            // Calculate how far GPS says we moved
+           
             val movedDistance =
                 distanceBetween(
                     previousLocation,
@@ -1590,11 +1573,7 @@ class MainActivity : ComponentActivity() {
                 )
 
 
-            /*
-             * GPS can drift even while stationary.
-             *
-             * Ignore small movement caused by GPS noise.
-             */
+           
             val requiredMovement =
                 maxOf(
                     8.0,
@@ -1604,7 +1583,6 @@ class MainActivity : ComponentActivity() {
 
             if (movedDistance >= requiredMovement) {
 
-                // User has probably actually moved
                 lastAcceptedLocation =
                     user
 
@@ -1616,11 +1594,6 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-
-
-        // =========================================================
-        // ARRIVAL
-        // =========================================================
 
         if (
             distanceToDestination <= 12.0
@@ -1813,14 +1786,7 @@ class MainActivity : ComponentActivity() {
         return try {
 
 
-            /*
-             * ORS Geocoder:
-             *
-             * https://api.openrouteservice.org/geocode/search
-             *
-             * Current GPS is supplied as a focus point.
-             * This helps ORS choose nearby results.
-             */
+        
 
             val url =
 
@@ -1831,7 +1797,7 @@ class MainActivity : ComponentActivity() {
                     )
 
                     .host(
-                        "api.openrouteservice.org"
+                        "API"
                     )
 
                     .addPathSegment(
@@ -2000,13 +1966,7 @@ class MainActivity : ComponentActivity() {
                             )
 
 
-                    /*
-                     * IMPORTANT:
-                     *
-                     * ORS gives:
-                     *
-                     * [ longitude, latitude ]
-                     */
+                   
 
                     val longitude =
                         coordinates
@@ -2072,16 +2032,7 @@ class MainActivity : ComponentActivity() {
         return try {
 
 
-            /*
-             * ORS requires coordinates:
-             *
-             * [ longitude, latitude ]
-             *
-             * NOT:
-             *
-             * [ latitude, longitude ]
-             */
-
+         
 
             val coordinatesArray =
 
@@ -2159,7 +2110,7 @@ class MainActivity : ComponentActivity() {
 
                     .url(
 
-                        "https://api.openrouteservice.org/v2/directions/foot-walking/geojson"
+                        "API"
                     )
 
                     .post(
@@ -2336,9 +2287,7 @@ class MainActivity : ComponentActivity() {
                     }
 
 
-                    // -------------------------------------------------
-                    // DISTANCE + DURATION
-                    // -------------------------------------------------
+                    
 
                     val properties =
 
