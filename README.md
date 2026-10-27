@@ -24,3 +24,15 @@ The Android application handles destination input, GPS tracking, route calculati
 
 ### Objective
 To develop an accessible, wearable, and affordable navigation solution that combines mobile software, embedded hardware, and sensor technology to improve independent mobility for visually impaired users.
+
+
+## Project Gallery
+
+### BlindNav Prototype
+![BlindNav Prototype](<img width="333" height="746" alt="image" src="https://github.com/user-attachments/assets/1aa56732-5a66-439c-b447-4bb61976215b" />
+)
+
+### Android Application
+![BlindNav Android App](<img width="483" height="730" alt="image" src="https://github.com/user-attachments/assets/80bc0815-5985-4051-bcc6-f01e5089eb7c" />
+)
+
